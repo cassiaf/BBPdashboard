@@ -1,357 +1,254 @@
-# -*- coding: utf-8 -*-
-# Copyright 2024-2025 Streamlit Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import altair as alt
+import zipfile
+import json
+import io
+import plotly.express as px
+from block_categories import block_categories
+
 
 st.set_page_config(
-    page_title="Stock peer analysis dashboard",
+    page_title="PlayData project analysis",
     page_icon=":chart_with_upwards_trend:",
     layout="wide",
 )
 
 """
-# :material/query_stats: Stock peer analysis
+# :material/query_stats: PlayData project analysis
 
-Easily compare stocks against others in their peer group.
+Analyze and compare your .sb3 project files.
 """
 
 ""  # Add some space.
 
-cols = st.columns([1, 3])
-# Will declare right cell later to avoid showing it when no data.
+cols = st.columns([1, 2, 2])
 
-STOCKS = [
-    "AAPL",
-    "ABBV",
-    "ACN",
-    "ADBE",
-    "ADP",
-    "AMD",
-    "AMGN",
-    "AMT",
-    "AMZN",
-    "APD",
-    "AVGO",
-    "AXP",
-    "BA",
-    "BK",
-    "BKNG",
-    "BMY",
-    "BRK.B",
-    "BSX",
-    "C",
-    "CAT",
-    "CI",
-    "CL",
-    "CMCSA",
-    "COST",
-    "CRM",
-    "CSCO",
-    "CVX",
-    "DE",
-    "DHR",
-    "DIS",
-    "DUK",
-    "ELV",
-    "EOG",
-    "EQR",
-    "FDX",
-    "GD",
-    "GE",
-    "GILD",
-    "GOOG",
-    "GOOGL",
-    "HD",
-    "HON",
-    "HUM",
-    "IBM",
-    "ICE",
-    "INTC",
-    "ISRG",
-    "JNJ",
-    "JPM",
-    "KO",
-    "LIN",
-    "LLY",
-    "LMT",
-    "LOW",
-    "MA",
-    "MCD",
-    "MDLZ",
-    "META",
-    "MMC",
-    "MO",
-    "MRK",
-    "MSFT",
-    "NEE",
-    "NFLX",
-    "NKE",
-    "NOW",
-    "NVDA",
-    "ORCL",
-    "PEP",
-    "PFE",
-    "PG",
-    "PLD",
-    "PM",
-    "PSA",
-    "REGN",
-    "RTX",
-    "SBUX",
-    "SCHW",
-    "SLB",
-    "SO",
-    "SPGI",
-    "T",
-    "TJX",
-    "TMO",
-    "TSLA",
-    "TXN",
-    "UNH",
-    "UNP",
-    "UPS",
-    "V",
-    "VZ",
-    "WFC",
-    "WM",
-    "WMT",
-    "XOM",
-]
-
-DEFAULT_STOCKS = ["AAPL", "MSFT", "GOOGL", "NVDA", "AMZN", "TSLA", "META"]
-
-
-def stocks_to_str(stocks):
-    return ",".join(stocks)
-
-
-if "tickers_input" not in st.session_state:
-    st.session_state.tickers_input = st.query_params.get(
-        "stocks", stocks_to_str(DEFAULT_STOCKS)
-    ).split(",")
-
-
-# Callback to update query param when input changes
-def update_query_param():
-    if st.session_state.tickers_input:
-        st.query_params["stocks"] = stocks_to_str(st.session_state.tickers_input)
-    else:
-        st.query_params.pop("stocks", None)
-
-
-top_left_cell = cols[0].container(
+last_cell = cols[2].container(
     border=True, height="stretch", vertical_alignment="center"
 )
 
+top_left_cell = cols[0].container(
+    border=True, height="stretch", vertical_alignment="top"
+)
+
+
 with top_left_cell:
-    # Selectbox for stock tickers
+    uploaded_files = st.file_uploader("Upload your files", type="sb3", accept_multiple_files=True, key=None, help=None, on_change=None, args=None, kwargs=None, disabled=False, label_visibility="collapsed", width="stretch")
+
+# Build a list of uploaded filenames (Streamlit returns UploadedFile objects)
+uploaded_names = [f.name for f in uploaded_files] if uploaded_files else []
+
+with top_left_cell:
+
+    # Keep `tickers` (the multiselect selection) in session state and
+    # automatically sync it to uploaded files when uploads change.
+    # Don't overwrite the user's manual selection unless the uploaded
+    # set is different from the current selection.
+    if uploaded_names:
+        if (
+            "tickers" not in st.session_state
+            or set(st.session_state.get("tickers", [])) != set(uploaded_names)
+        ):
+            # Preserve upload order; copy to avoid mutating original list
+            st.session_state["tickers"] = uploaded_names.copy()
+    else:
+        # Ensure key exists so the widget has predictable state
+        st.session_state.setdefault("tickers", [])
+
+    # Selectbox for projects (use filenames as options). Use the session
+    # state key to reflect automatic updates above.
     tickers = st.multiselect(
-        "Stock tickers",
-        options=sorted(set(STOCKS) | set(st.session_state.tickers_input)),
-        default=st.session_state.tickers_input,
-        placeholder="Choose stocks to compare. Example: NVDA",
+        "Projects to compare",
+        options=sorted(uploaded_names),
+        key="tickers",
+        placeholder="Choose projects to compare",
         accept_new_options=True,
     )
 
-# Time horizon selector
-horizon_map = {
-    "1 Months": "1mo",
-    "3 Months": "3mo",
-    "6 Months": "6mo",
-    "1 Year": "1y",
-    "5 Years": "5y",
-    "10 Years": "10y",
-    "20 Years": "20y",
+# Type of analysis selector
+analysis_map = {
+    "Timeline": "analysis_timeline",
+    "Final Project": "analysis_final",
 }
 
 with top_left_cell:
-    # Buttons for picking time horizon
-    horizon = st.pills(
-        "Time horizon",
-        options=list(horizon_map.keys()),
-        default="6 Months",
+    # Buttons for picking analysis selector
+    analysis = st.pills(
+        "What type of analysis?",
+        options=list(analysis_map.keys()),
+        default="Final Project",
     )
-
-tickers = [t.upper() for t in tickers]
-
-# Update query param when text input changes
-if tickers:
-    st.query_params["stocks"] = stocks_to_str(tickers)
-else:
-    # Clear the param if input is empty
-    st.query_params.pop("stocks", None)
-
-if not tickers:
-    top_left_cell.info("Pick some stocks to compare", icon=":material/info:")
-    st.stop()
-
 
 right_cell = cols[1].container(
     border=True, height="stretch", vertical_alignment="center"
-)
+)   
 
+## Reading the uploeaded files 
 
-@st.cache_resource(show_spinner=False)
-def load_data(tickers, period):
-    tickers_obj = yf.Tickers(tickers)
-    data = tickers_obj.history(period=period)
-    if data is None:
-        raise RuntimeError("YFinance returned no data.")
-    return data["Close"]
+def read_sb3_files(uploaded_file):
+    """
+    Read the timeline.json and project.json files from an uploaded .sb3 file.
+    Returns a tuple: (timeline_df, project_data)
+      - timeline_df: pandas DataFrame or None
+      - project_data: dict or None
+    """
+    try:
+        # Open uploaded .sb3 file as a ZIP archive
+        with zipfile.ZipFile(io.BytesIO(uploaded_file.read()), 'r') as archive:
+            
+            # Initialize variables
+            timeline_df = None
+            project_data = None
 
+            # ---- Read timeline.json ----
+            if "timeline.json" in archive.namelist():
+                with archive.open("timeline.json") as timeline_file:
+                    try:
+                        timeline_json = json.load(timeline_file)
+                        timeline_df = pd.DataFrame(timeline_json)
+                    except Exception as e:
+                        st.error(f"Error reading timeline.json: {e}")
+            else:
+                st.warning("timeline.json not found in the .sb3 file")
 
-# Load the data
-try:
-    data = load_data(tickers, horizon_map[horizon])
-except yf.exceptions.YFRateLimitError as e:
-    st.warning("YFinance is rate-limiting us :(\nTry again later.")
-    load_data.clear()  # Remove the bad cache entry.
-    st.stop()
+            # ---- Read project.json ----
+            if "project.json" in archive.namelist():
+                with archive.open("project.json") as project_file:
+                    try:
+                        project_data = json.load(project_file)
+                    except Exception as e:
+                        st.error(f"Error reading project.json: {e}")
+            else:
+                st.warning("project.json not found in the .sb3 file")
 
-empty_columns = data.columns[data.isna().all()].tolist()
+            # ---- Validation ----
+            if timeline_df is None and project_data is None:
+                st.error("Neither timeline.json nor project.json was found in the .sb3 file.")
+                return None, None
 
-if empty_columns:
-    st.error(f"Error loading data for the tickers: {', '.join(empty_columns)}.")
-    st.stop()
+            return timeline_df, project_data
 
-# Normalize prices (start at 1)
-normalized = data.div(data.iloc[0])
+    except zipfile.BadZipFile:
+        st.error("The uploaded file is not a valid .sb3 file.")
+        return None, None
+    except Exception as e:
+        st.error(f"Unexpected error: {e}")
+        return None, None
 
-latest_norm_values = {normalized[ticker].iat[-1]: ticker for ticker in tickers}
-max_norm_value = max(latest_norm_values.items())
-min_norm_value = min(latest_norm_values.items())
+    # CREATING CHARTS AND TABLES FOR SELECTED PROJECTS
 
-bottom_left_cell = cols[0].container(
-    border=True, height="stretch", vertical_alignment="center"
-)
+    # Summary DataFrame for all uploaded projects
+df_allprojects = pd.DataFrame(columns=['project_name', 'total_time', 'num_events'])
 
-with bottom_left_cell:
-    cols = st.columns(2)
-    cols[0].metric(
-        "Best stock",
-        max_norm_value[1],
-        delta=f"{round(max_norm_value[0] * 100)}%",
-        width="content",
-    )
-    cols[1].metric(
-        "Worst stock",
-        min_norm_value[1],
-        delta=f"{round(min_norm_value[0] * 100)}%",
-        width="content",
-    )
+if uploaded_files:
+    all_blocks_df = []  
 
+    for uploaded_file in uploaded_files:
+        st.subheader(f"{uploaded_file.name}")
+        
+        # Read the data
+        df_uploaded, project_data = read_sb3_files(uploaded_file)
+        
+        if df_uploaded is not None:          
+            # Timeline analysis
+            df = df_uploaded.transpose()
+            df.index.name = 'timestamp'
+            df = df.reset_index()
+            df['timestamp'] = pd.to_numeric(df['timestamp'])
 
-# Plot normalized prices
-with right_cell:
-    st.altair_chart(
-        alt.Chart(
-            normalized.reset_index().melt(
-                id_vars=["Date"], var_name="Stock", value_name="Normalized price"
+            # Compute time_diff between events
+            if len(df) > 0:
+                first_ts = df['timestamp'].iloc[0]
+            else:
+                first_ts = 0
+            df['time_diff'] = (df['timestamp'] - first_ts)/1000 
+
+            # Total time spent = last_timestamp - first_timestamp (seconds)
+            if len(df) > 1:
+                df['total_time'] = (df['timestamp'] - first_ts)/1000
+                total_time = df['total_time'].iloc[-1]
+            else:
+                total_time = 0.0
+
+            num_events = len(df)
+
+            # Append a row for this uploaded project to the summary DataFrame
+            df_allprojects.loc[len(df_allprojects)] = [uploaded_file.name, total_time, num_events]
+
+            # Display basic statistics
+            st.write(f"Number of events: {len(df)}")
+            st.write(f"Total time spent: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
+
+            # Timeline chart
+            fig = px.line(
+                df,
+                x="total_time",
+                y=df.index,
+                title='Events over time',
+                hover_data ={'total_time', 'event'}
+            )   
+
+            fig.update_layout(
+                title=uploaded_file.name,
+                xaxis_title="Time (seconds)",
+                yaxis_title="Number of events",
+                showlegend=False,
+                width=700, 
+                height=250,
             )
+
+            with right_cell:
+                st.plotly_chart(fig)
+ 
+            # Project.json analysis (NEW PART) ---
+            if project_data is not None and "targets" in project_data:
+                block_types = []
+                for target in project_data["targets"]:
+                    blocks = target.get("blocks", {})
+                    for _, block_data in blocks.items():
+                        if isinstance(block_data, dict):
+                            opcode = block_data.get("opcode", "unknown")
+                            block_types.append(opcode)
+
+                if block_types:
+                    df_blocks = pd.DataFrame(block_types, columns=["block_type"])
+                    df_blocks = df_blocks.value_counts().reset_index(name="count")
+                    df_blocks["project"] = uploaded_file.name
+                    all_blocks_df.append(df_blocks)
+                else:
+                    st.info("No blocks found in this project.json file.")
+
+            # Display DataFrames
+            st.dataframe(df)
+            st.dataframe(df_allprojects)
+
+    # --- After loop: show combined block-type chart ---
+    if all_blocks_df:
+        df_all_blocks = pd.concat(all_blocks_df, ignore_index=True)
+
+        fig_blocks = px.bar(
+            df_all_blocks,
+            x="project", y="count", color="block_type",
+            barmode="group",
+            title="Number of Blocks by type",
+            height=400
         )
-        .mark_line()
-        .encode(
-            alt.X("Date:T"),
-            alt.Y("Normalized price:Q").scale(zero=False),
-            alt.Color("Stock:N"),
+        
+        # Sort block types by total count
+        order = (
+            df_all_blocks.groupby("block_type")["count"]
+            .sum()
+            .sort_values(ascending=False)
+            .index
         )
-        .properties(height=400)
-    )
+        fig_blocks.update_xaxes(categoryorder="array", categoryarray=order, tickangle=45)
 
-""
-""
+        with last_cell:
+            st.plotly_chart(fig_blocks, use_container_width=True)
 
-# Plot individual stock vs peer average
-"""
-## Individual stocks vs peer average
 
-For the analysis below, the "peer average" when analyzing stock X always
-excludes X itself.
-"""
+        # Display the DataFrame
+        st.dataframe(df)
+        st.dataframe(df_allprojects)
 
-if len(tickers) <= 1:
-    st.warning("Pick 2 or more tickers to compare them")
-    st.stop()
 
-NUM_COLS = 4
-cols = st.columns(NUM_COLS)
-
-for i, ticker in enumerate(tickers):
-    # Calculate peer average (excluding current stock)
-    peers = normalized.drop(columns=[ticker])
-    peer_avg = peers.mean(axis=1)
-
-    # Create DataFrame with peer average.
-    plot_data = pd.DataFrame(
-        {
-            "Date": normalized.index,
-            ticker: normalized[ticker],
-            "Peer average": peer_avg,
-        }
-    ).melt(id_vars=["Date"], var_name="Series", value_name="Price")
-
-    chart = (
-        alt.Chart(plot_data)
-        .mark_line()
-        .encode(
-            alt.X("Date:T"),
-            alt.Y("Price:Q").scale(zero=False),
-            alt.Color(
-                "Series:N",
-                scale=alt.Scale(domain=[ticker, "Peer average"], range=["red", "gray"]),
-                legend=alt.Legend(orient="bottom"),
-            ),
-            alt.Tooltip(["Date", "Series", "Price"]),
-        )
-        .properties(title=f"{ticker} vs peer average", height=300)
-    )
-
-    cell = cols[(i * 2) % NUM_COLS].container(border=True)
-    cell.write("")
-    cell.altair_chart(chart, use_container_width=True)
-
-    # Create Delta chart
-    plot_data = pd.DataFrame(
-        {
-            "Date": normalized.index,
-            "Delta": normalized[ticker] - peer_avg,
-        }
-    )
-
-    chart = (
-        alt.Chart(plot_data)
-        .mark_area()
-        .encode(
-            alt.X("Date:T"),
-            alt.Y("Delta:Q").scale(zero=False),
-        )
-        .properties(title=f"{ticker} minus peer average", height=300)
-    )
-
-    cell = cols[(i * 2 + 1) % NUM_COLS].container(border=True)
-    cell.write("")
-    cell.altair_chart(chart, use_container_width=True)
-
-""
-""
-
-"""
-## Raw data
-"""
-
-data
