@@ -201,50 +201,46 @@ if uploaded_files:
                 st.plotly_chart(fig)
  
             # Project.json analysis (NEW PART) ---
-            if project_data is not None and "targets" in project_data:
-                block_types = []
-                for target in project_data["targets"]:
-                    blocks = target.get("blocks", {})
-                    for _, block_data in blocks.items():
-                        if isinstance(block_data, dict):
-                            opcode = block_data.get("opcode", "unknown")
-                            block_types.append(opcode)
+            if project_data is not None:
+            # project.json contains "targets", each with "blocks"
+                block_counts = {}
 
-                if block_types:
-                    df_blocks = pd.DataFrame(block_types, columns=["block_type"])
-                    df_blocks = df_blocks.value_counts().reset_index(name="count")
-                    df_blocks["project"] = uploaded_file.name
-                    all_blocks_df.append(df_blocks)
+                for target in project_data.get("targets", []):
+                    for block_id, block in target.get("blocks", {}).items():
+                        if isinstance(block, dict) and "opcode" in block:
+                            opcode = block["opcode"]
+                            category = block_categories.get(opcode, "Other")
+                            block_counts[category] = block_counts.get(category, 0) + 1
+
+                # Convert to DataFrame
+                if block_counts:
+                    df_blocks = pd.DataFrame(
+                        list(block_counts.items()), columns=["Category", "Count"]
+                    ).sort_values("Count", ascending=False)
+
+                    # Plot
+                    fig_blocks = px.bar(
+                        df_blocks,
+                        x="Category",
+                        y="Count",
+                        title=f"Number of Blocks by Category – {uploaded_file.name}",
+                        color="Category",
+                    )
+
+                    fig_blocks.update_layout(
+                        xaxis_title="Block Category",
+                        yaxis_title="Number of Blocks",
+                        showlegend=False,
+                        width=700,
+                        height=400,
+                    )
+
+                    with last_cell:
+                        st.plotly_chart(fig_blocks, use_container_width=True)
+                        
                 else:
-                    st.info("No blocks found in this project.json file.")
+                    st.warning(f"No blocks found in {uploaded_file.name}.")
 
-            # Display DataFrames
-            st.dataframe(df)
-            st.dataframe(df_allprojects)
-
-    # --- After loop: show combined block-type chart ---
-    if all_blocks_df:
-        df_all_blocks = pd.concat(all_blocks_df, ignore_index=True)
-
-        fig_blocks = px.bar(
-            df_all_blocks,
-            x="project", y="count", color="block_type",
-            barmode="group",
-            title="Number of Blocks by type",
-            height=400
-        )
-        
-        # Sort block types by total count
-        order = (
-            df_all_blocks.groupby("block_type")["count"]
-            .sum()
-            .sort_values(ascending=False)
-            .index
-        )
-        fig_blocks.update_xaxes(categoryorder="array", categoryarray=order, tickangle=45)
-
-        with last_cell:
-            st.plotly_chart(fig_blocks, use_container_width=True)
 
 
         # Display the DataFrame
